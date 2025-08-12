@@ -1007,9 +1007,10 @@ func (f *frameworkImpl) runPostFilterPlugin(ctx context.Context, pl framework.Po
 // SelectVictimsOnNode(). Preempt removes victims from PreFilter state and
 // NodeInfo before calling this function.
 func (f *frameworkImpl) RunFilterPluginsWithNominatedPods(ctx context.Context, state fwk.CycleState, pod *v1.Pod, info fwk.NodeInfo) *fwk.Status {
-	var status *fwk.Status
+	logger := klog.FromContext(ctx)
+	logger = klog.LoggerWithName(logger, "FilterWithNominatedPods")
+	ctx = klog.NewContext(ctx, logger)
 
-	podsAdded := false
 	// We run filters twice in some cases. If the node has greater or equal priority
 	// nominated pods, we run them when those pods are added to PreFilter state and nodeInfo.
 	// If all filters succeed in this pass, we run them again when these
@@ -1028,29 +1029,19 @@ func (f *frameworkImpl) RunFilterPluginsWithNominatedPods(ctx context.Context, s
 	// the nominated pods are treated as not running. We can't just assume the
 	// nominated pods are running because they are not running right now and in fact,
 	// they may end up getting scheduled to a different node.
-	logger := klog.FromContext(ctx)
-	logger = klog.LoggerWithName(logger, "FilterWithNominatedPods")
-	ctx = klog.NewContext(ctx, logger)
-	for i := 0; i < 2; i++ {
-		stateToUse := state
-		nodeInfoToUse := info
-		if i == 0 {
-			var err error
-			podsAdded, stateToUse, nodeInfoToUse, err = addGENominatedPods(ctx, f, pod, state, info)
-			if err != nil {
-				return fwk.AsStatus(err)
-			}
-		} else if !podsAdded || !status.IsSuccess() {
-			break
-		}
 
-		status = f.RunFilterPlugins(ctx, stateToUse, pod, nodeInfoToUse)
-		if !status.IsSuccess() && !status.IsRejected() {
-			return status
-		}
+	// Run filters on node with nominated pods.
+	podsAdded, stateWithNom, nodeInfoWithNom, err := addGENominatedPods(ctx, f, pod, state, info)
+	if err != nil {
+		return fwk.AsStatus(err)
+	}
+	status := f.RunFilterPlugins(ctx, stateWithNom, pod, nodeInfoWithNom)
+	if !status.IsSuccess() || !podsAdded {
+		return status
 	}
 
-	return status
+	// Finally, run filters without nominated pods, if any were added in first iteration.
+	return f.RunFilterPlugins(ctx, state, pod, info)
 }
 
 // addGENominatedPods adds pods with equal or greater priority which are nominated
